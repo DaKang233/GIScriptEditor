@@ -1,0 +1,241 @@
+// Miliastra Wonderland / Genshin UGC L4D-style AI Director MVP.
+// Node-compatible version: only graph_events are declared as events, and only
+// builtin_functions from the VS Code extension are called. Placeholder prefab
+// GUID variables must be replaced with real project assets before conversion.
+
+// State encoding:
+// 0 = BUILD_UP, 1 = SUSTAIN_PEAK, 2 = PEAK_FADE, 3 = RELAX.
+// Special encoding: 0 = hunter/straggler punisher, 1 = smoker/puller,
+// 2 = boomer/mob caller. Boss encoding: 0 = none, 1 = tank, 2 = witch.
+
+event OnEntityCreated(entity createdEntity)
+{
+    // Initialize the director when the scene/controller entity is created.
+    // All persistence uses supported built-ins instead of custom script globals.
+    SetPresetStatus("director_state", 0);
+    SetPresetStatus("director_seconds", 0);
+    SetPresetStatus("state_seconds", 0);
+    SetPresetStatus("p1_intensity", 0);
+    SetPresetStatus("p2_intensity", 0);
+    SetPresetStatus("p3_intensity", 0);
+    SetPresetStatus("p4_intensity", 0);
+    SetPresetStatus("team_flow", 0);
+    SetPresetStatus("relax_start_flow", 0);
+    SetPresetStatus("last_boss_type", 0);
+    SetPresetStatus("next_boss_flow", GetRandomInteger(150, 290));
+
+    // Start independent timers so each spawn layer remains structurally random.
+    StartGlobalTimer("director_tick", 1.0, true);
+    StartGlobalTimer("director_mob", GetRandomFloatingPointNumber(90.0, 180.0), false);
+    StartGlobalTimer("director_hunter", GetRandomFloatingPointNumber(35.0, 70.0), false);
+    StartGlobalTimer("director_smoker", GetRandomFloatingPointNumber(45.0, 80.0), false);
+    StartGlobalTimer("director_boomer", GetRandomFloatingPointNumber(55.0, 90.0), false);
+    StartGlobalTimer("director_boss", 5.0, true);
+
+    print("AI Director MVP initialized: BUILD_UP");
+}
+
+event OnTimerIsTriggered(string timerName)
+{
+    int state = GetPresetStatus("director_state");
+    int directorSeconds = GetPresetStatus("director_seconds");
+    int stateSeconds = GetPresetStatus("state_seconds");
+    int p1 = GetPresetStatus("p1_intensity");
+    int p2 = GetPresetStatus("p2_intensity");
+    int p3 = GetPresetStatus("p3_intensity");
+    int p4 = GetPresetStatus("p4_intensity");
+    int maxIntensity = p1;
+    int teamFlow = GetPresetStatus("team_flow");
+
+    if (p2 > maxIntensity) { maxIntensity = p2; }
+    if (p3 > maxIntensity) { maxIntensity = p3; }
+    if (p4 > maxIntensity) { maxIntensity = p4; }
+
+    if (timerName == "director_tick") {
+        SetPresetStatus("director_seconds", directorSeconds + 1);
+        SetPresetStatus("state_seconds", stateSeconds + 1);
+
+        // Decay intensity only when the team is not actively in combat.
+        if (!QueryifSpecifiedEntityIsinCombat(GetSelfEntity())) {
+            if (p1 > 0) { SetPresetStatus("p1_intensity", p1 - 7); }
+            if (p2 > 0) { SetPresetStatus("p2_intensity", p2 - 7); }
+            if (p3 > 0) { SetPresetStatus("p3_intensity", p3 - 7); }
+            if (p4 > 0) { SetPresetStatus("p4_intensity", p4 - 7); }
+        }
+
+        // Adaptive pacing transitions.
+        if (state == 0 && maxIntensity >= 85) {
+            SetPresetStatus("director_state", 1);
+            SetPresetStatus("state_seconds", 0);
+            print("Director state: SUSTAIN_PEAK");
+        }
+        if (state == 1 && stateSeconds >= 4) {
+            SetPresetStatus("director_state", 2);
+            SetPresetStatus("state_seconds", 0);
+            print("Director state: PEAK_FADE");
+        }
+        if (state == 2 && maxIntensity <= 35 && !QueryifSpecifiedEntityIsinCombat(GetSelfEntity())) {
+            SetPresetStatus("director_state", 3);
+            SetPresetStatus("state_seconds", 0);
+            SetPresetStatus("relax_start_flow", teamFlow);
+            StopGlobalTimer("director_mob");
+            StopGlobalTimer("director_hunter");
+            StopGlobalTimer("director_smoker");
+            StopGlobalTimer("director_boomer");
+            print("Director state: RELAX");
+        }
+        if (state == 3 && (stateSeconds >= GetRandomInteger(35, 45) || teamFlow - GetPresetStatus("relax_start_flow") >= 80)) {
+            SetPresetStatus("director_state", 0);
+            SetPresetStatus("state_seconds", 0);
+            StartGlobalTimer("director_mob", GetRandomFloatingPointNumber(90.0, 180.0), false);
+            StartGlobalTimer("director_hunter", GetRandomFloatingPointNumber(35.0, 70.0), false);
+            StartGlobalTimer("director_smoker", GetRandomFloatingPointNumber(45.0, 80.0), false);
+            StartGlobalTimer("director_boomer", GetRandomFloatingPointNumber(55.0, 90.0), false);
+            print("Director state: BUILD_UP");
+        }
+    }
+
+    if (timerName == "director_mob" && state != 3) {
+        list<entity> spawnPoints = GetEntityListbyUnitTag("director_spawn_behind");
+        entity spawnPoint = RandomDeckSelectorSelectionList(spawnPoints);
+        int mobSize = 12 + ModuloOperation(directorSeconds, 17);
+        print("Incoming mob from behind");
+        PlayerPlaysOneShot2DSoundEffect("director_mob_warning");
+        CreatePrefab("COMMON_INFECTED_PREFAB_GUID", spawnPoint, mobSize);
+        StartGlobalTimer("director_mob", GetRandomFloatingPointNumber(90.0, 180.0), false);
+    }
+
+    if (timerName == "director_hunter" && state != 3) {
+        list<entity> spawnPoints = GetEntityListbyUnitTag("director_spawn_behind");
+        entity spawnPoint = RandomDeckSelectorSelectionList(spawnPoints);
+        print("Special incoming: straggler hunter");
+        CreatePrefab("HUNTER_PREFAB_GUID", spawnPoint, 1);
+        StartGlobalTimer("director_hunter", GetRandomFloatingPointNumber(35.0, 70.0), false);
+    }
+
+    if (timerName == "director_smoker" && state != 3) {
+        list<entity> spawnPoints = GetEntityListbyUnitTag("director_spawn_high");
+        entity spawnPoint = RandomDeckSelectorSelectionList(spawnPoints);
+        print("Special incoming: team splitter");
+        CreatePrefab("SMOKER_PREFAB_GUID", spawnPoint, 1);
+        StartGlobalTimer("director_smoker", GetRandomFloatingPointNumber(45.0, 80.0), false);
+    }
+
+    if (timerName == "director_boomer" && state != 3) {
+        list<entity> spawnPoints = GetEntityListbyUnitTag("director_spawn_ahead");
+        entity spawnPoint = RandomDeckSelectorSelectionList(spawnPoints);
+        print("Special incoming: mob caller");
+        CreatePrefab("BOOMER_PREFAB_GUID", spawnPoint, 1);
+        StartGlobalTimer("director_boomer", GetRandomFloatingPointNumber(55.0, 90.0), false);
+    }
+
+    if (timerName == "director_boss") {
+        int nextBossFlow = GetPresetStatus("next_boss_flow");
+        if (teamFlow >= nextBossFlow) {
+            int bossRoll = WeightedRandom(45, 45, 10);
+            int lastBoss = GetPresetStatus("last_boss_type");
+            list<entity> bossPoints = GetEntityListbyUnitTag("director_boss");
+            entity bossPoint = RandomDeckSelectorSelectionList(bossPoints);
+            if (bossRoll == lastBoss) { bossRoll = 0; }
+            if (bossRoll == 1) {
+                print("Tank incoming");
+                ActivateScreenShake(2.0, 0.7);
+                PlayerPlaysOneShot2DSoundEffect("director_tank_warning");
+                CreatePrefab("TANK_PREFAB_GUID", bossPoint, 1);
+            }
+            if (bossRoll == 2) {
+                print("Witch nearby");
+                PlayerPlaysOneShot2DSoundEffect("director_witch_cry");
+                CreatePrefab("WITCH_PREFAB_GUID", bossPoint, 1);
+            }
+            SetPresetStatus("last_boss_type", bossRoll);
+            SetPresetStatus("next_boss_flow", nextBossFlow + GetRandomInteger(150, 290));
+        }
+    }
+}
+
+event OnOnHitDetectionIsTriggered(entity attacker, entity victim, int damage)
+{
+    // Treat hits on player-owned characters as the main intensity input.
+    int playerID = GetPlayerIDbyPlayerGUID(GetPlayerEntitytoWhichtheCharacterBelongs(victim));
+    if (playerID == 1) { SetPresetStatus("p1_intensity", GetPresetStatus("p1_intensity") + damage); }
+    if (playerID == 2) { SetPresetStatus("p2_intensity", GetPresetStatus("p2_intensity") + damage); }
+    if (playerID == 3) { SetPresetStatus("p3_intensity", GetPresetStatus("p3_intensity") + damage); }
+    if (playerID == 4) { SetPresetStatus("p4_intensity", GetPresetStatus("p4_intensity") + damage); }
+}
+
+event OnAllPlayersCharactersAreDown()
+{
+    // A full down state is a dramatic peak and can settle/fail the stage.
+    SetPresetStatus("p1_intensity", 100);
+    SetPresetStatus("p2_intensity", 100);
+    SetPresetStatus("p3_intensity", 100);
+    SetPresetStatus("p4_intensity", 100);
+    print("All players are down: director reached maximum intensity");
+}
+
+event OnCharacterRevives(entity revivedCharacter)
+{
+    int playerID = GetPlayerIDbyPlayerGUID(GetPlayerEntitytoWhichtheCharacterBelongs(revivedCharacter));
+    if (playerID == 1) { SetPresetStatus("p1_intensity", GetPresetStatus("p1_intensity") + 25); }
+    if (playerID == 2) { SetPresetStatus("p2_intensity", GetPresetStatus("p2_intensity") + 25); }
+    if (playerID == 3) { SetPresetStatus("p3_intensity", GetPresetStatus("p3_intensity") + 25); }
+    if (playerID == 4) { SetPresetStatus("p4_intensity", GetPresetStatus("p4_intensity") + 25); }
+    print("Revive moment: cooperation reinforced");
+}
+
+event OnCreationEntersCombat(entity creation)
+{
+    // Existing spawned threats are allowed to fight even if the director later enters RELAX.
+    SetEntityActiveNameplate(creation, true);
+}
+
+event OnCreationLeavesCombat(entity creation)
+{
+    // During RELAX, remove dormant extras to let the team emotionally recover.
+    if (GetPresetStatus("director_state") == 3) {
+        DestroyEntity(creation);
+    }
+}
+
+event OnEntityRemovedDestroyed(entity removedEntity)
+{
+    // Nearby kills add small intensity spikes. This approximates L4D's nearby infected death signal.
+    list<entity> nearbyPlayers = GetEntityListbySpecifiedRange(removedEntity, 20.0);
+    int nearbyCount = GetInventoryItemQuantity(nearbyPlayers);
+    if (nearbyCount > 0) {
+        SetPresetStatus("p1_intensity", GetPresetStatus("p1_intensity") + 4);
+        SetPresetStatus("p2_intensity", GetPresetStatus("p2_intensity") + 4);
+        SetPresetStatus("p3_intensity", GetPresetStatus("p3_intensity") + 4);
+        SetPresetStatus("p4_intensity", GetPresetStatus("p4_intensity") + 4);
+    }
+}
+
+event OnEnteringCollisionTrigger(entity trigger, entity enteringEntity)
+{
+    // Designer-authored flow triggers replace a full Left 4 Dead nav-mesh flow graph.
+    if (QueryIfEntityHasUnitStatus(trigger, "director_flow_advance")) {
+        SetPresetStatus("team_flow", GetPresetStatus("team_flow") + 25);
+    }
+    if (QueryIfEntityHasUnitStatus(trigger, "boomer_vomit_zone")) {
+        print("Boomer effect: forced mob");
+        PlayerPlaysOneShot2DSoundEffect("director_mob_warning");
+        list<entity> spawnPoints = GetEntityListbyUnitTag("director_spawn_any");
+        entity spawnPoint = RandomDeckSelectorSelectionList(spawnPoints);
+        CreatePrefab("COMMON_INFECTED_PREFAB_GUID", spawnPoint, 24);
+        StartGlobalTimer("director_mob", GetRandomFloatingPointNumber(90.0, 180.0), false);
+    }
+    if (QueryIfEntityHasUnitStatus(trigger, "team_spread_warning")) {
+        print("Stay together");
+        PlayerPlaysOneShot2DSoundEffect("director_regroup_warning");
+    }
+}
+
+event OnPresetStatusChanges(string presetName, int oldValue, int newValue)
+{
+    // Clamp intensity-like values into 0..100 using only supported preset writes.
+    if (newValue < 0) { SetPresetStatus(presetName, 0); }
+    if (newValue > 100 && presetName != "director_seconds" && presetName != "team_flow" && presetName != "next_boss_flow") {
+        SetPresetStatus(presetName, 100);
+    }
+}

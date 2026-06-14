@@ -1,0 +1,232 @@
+// Left 4 Dead style AI Director MVP for Miliastra Wonderland.
+// This file uses only functions and events registered in GIScriptEditor/compiler.cpp.
+
+// Adds a signed amount to the global director intensity custom variable.
+global void AddDirectorIntensity(int amount)
+{
+    // Current intensity stored on the director/controller entity.
+    int currentIntensity = GetSelfEntity().director_intensity as int;
+    // Updated intensity before clamping.
+    int updatedIntensity = currentIntensity + amount;
+    // Clamped intensity in the supported 0..100 range.
+    int clampedIntensity = updatedIntensity;
+    if (clampedIntensity < 0) {
+        clampedIntensity = 0;
+    }
+    if (clampedIntensity > 100) {
+        clampedIntensity = 100;
+    }
+    GetSelfEntity().director_intensity as int = clampedIntensity;
+}
+
+// Reads the current encounter state custom variable.
+global int GetDirectorState()
+{
+    // Current finite-state-machine state: 0 CALM, 1 BUILDUP, 2 PEAK, 3 RELAX.
+    int state = GetSelfEntity().director_state as int;
+    return state;
+}
+
+// Writes the current encounter state and resets the state timer.
+global void SetDirectorState(int nextState)
+{
+    // New finite-state-machine state to store on the director entity.
+    int storedState = nextState;
+    GetSelfEntity().director_state as int = storedState;
+    // Seconds spent in the current state.
+    GetSelfEntity().director_state_seconds as int = 0;
+}
+
+// Tracks current players and whether the director/controller is in combat.
+global void UpdatePlayerTracker()
+{
+    // Current player entities on the field.
+    list<entity> players = GetListofPlayerEntitiesontheField();
+    // Player count or mode-count value available from the registered API.
+    int playerCount = QueryGameModeAndPlayerNumber();
+    // Combat flag for the director/controller entity.
+    bool inCombat = QueryifSpecifiedEntityIsinCombat(GetSelfEntity());
+    GetSelfEntity().director_player_count as int = playerCount;
+    GetSelfEntity().director_in_combat as bool = inCombat;
+    GetSelfEntity().director_players as list<entity> = players;
+}
+
+// Spawns low intensity enemies near the director spawn origin.
+global void SpawnLowIntensityEnemies()
+{
+    // Common enemy prefab configured as a custom prefab variable on the director entity.
+    guid<prefab> commonPrefab = GetSelfEntity().director_common_prefab as guid<prefab>;
+    // Spawn position near the director entity.
+    vec position = Create3DVector((float)GetRandomInteger(-6, 6), 0.0, (float)GetRandomInteger(-6, 6));
+    // Spawn rotation for the created prefab.
+    vec rotation = Create3DVector(0.0, (float)GetRandomInteger(0, 359), 0.0);
+    // Empty argument list for the prefab creation node.
+    list<int> createArgs = list<int>{};
+    // Created common enemy entity.
+    entity spawned = CreatePrefab(commonPrefab, position, rotation, GetSelfEntity(), GetSelfEntity(), true, 0, createArgs);
+    print("Director spawned low intensity enemy");
+}
+
+// Spawns normal intensity enemies using a prefab group.
+global void SpawnNormalIntensityEnemies()
+{
+    // Weighted group selector result for normal encounters.
+    int groupRoll = WeightedRandom(list<int>{50, 35, 15});
+    // Group config id derived from the weighted roll.
+    int groupId = 100 + groupRoll;
+    // Spawn position near the director entity.
+    vec position = Create3DVector((float)GetRandomInteger(-10, 10), 0.0, (float)GetRandomInteger(-10, 10));
+    // Spawn rotation for the created group.
+    vec rotation = Create3DVector(0.0, (float)GetRandomInteger(0, 359), 0.0);
+    // Empty argument list for the prefab group creation node.
+    list<int> createArgs = list<int>{};
+    // Created normal enemy group entities.
+    list<entity> spawnedGroup = CreatePrefabGroup(groupId, position, rotation, GetSelfEntity(), GetSelfEntity(), 0, createArgs, true);
+    print("Director spawned normal intensity group");
+}
+
+// Spawns high intensity elite enemies and supporting enemies.
+global void SpawnHighIntensityEnemies()
+{
+    // Elite enemy prefab configured as a custom prefab variable on the director entity.
+    guid<prefab> elitePrefab = GetSelfEntity().director_elite_prefab as guid<prefab>;
+    // Weighted elite pattern selector.
+    int eliteRoll = WeightedRandom(list<int>{20, 50, 30});
+    // Elite count derived from the weighted selector and random range.
+    int eliteCount = 1 + ModuloOperation(eliteRoll + GetRandomInteger(0, 2), 3);
+    // Spawn position near the director entity.
+    vec position = Create3DVector((float)GetRandomInteger(-14, 14), 0.0, (float)GetRandomInteger(-14, 14));
+    // Spawn rotation for the elite prefab.
+    vec rotation = Create3DVector(0.0, (float)GetRandomInteger(0, 359), 0.0);
+    // Empty argument list for the prefab creation node.
+    list<int> createArgs = list<int>{};
+    // Created elite enemy entity.
+    entity spawnedElite = CreatePrefab(elitePrefab, position, rotation, GetSelfEntity(), GetSelfEntity(), true, eliteCount, createArgs);
+    print("Director spawned high intensity elite enemy");
+}
+
+// Selects an enemy spawn layer from the current intensity value.
+global void SpawnByIntensity()
+{
+    // Current clamped director intensity.
+    int intensity = GetSelfEntity().director_intensity as int;
+    if (intensity < 30) {
+        SpawnLowIntensityEnemies();
+    }
+    if (intensity >= 30 && intensity < 60) {
+        SpawnNormalIntensityEnemies();
+    }
+    if (intensity >= 60) {
+        SpawnHighIntensityEnemies();
+    }
+}
+
+// Advances the encounter finite state machine once per Director tick.
+global void UpdateEncounterState()
+{
+    // Current finite-state-machine state.
+    int state = GetDirectorState();
+    // Current director intensity.
+    int intensity = GetSelfEntity().director_intensity as int;
+    // Seconds spent in this state.
+    int stateSeconds = GetSelfEntity().director_state_seconds as int;
+    if (state == 0 && intensity >= 30) {
+        SetDirectorState(1);
+        print("Director state CALM -> BUILDUP");
+    }
+    if (state == 1 && intensity >= 60) {
+        SetDirectorState(2);
+        print("Director state BUILDUP -> PEAK");
+    }
+    if (state == 2 && intensity >= 85) {
+        SetDirectorState(3);
+        print("Director state PEAK -> RELAX");
+    }
+    if (state == 3 && stateSeconds >= 30) {
+        SetDirectorState(0);
+        print("Director state RELAX -> CALM");
+    }
+}
+
+// Runs the complete director update tick.
+global void DirectorUpdate()
+{
+    // Total number of DirectorUpdate ticks executed.
+    int tickCount = GetSelfEntity().director_tick_count as int;
+    // Seconds spent in the current encounter state.
+    int stateSeconds = GetSelfEntity().director_state_seconds as int;
+    // Whether the tracked entity is currently in combat.
+    bool inCombat = QueryifSpecifiedEntityIsinCombat(GetSelfEntity());
+    GetSelfEntity().director_tick_count as int = tickCount + 1;
+    GetSelfEntity().director_state_seconds as int = stateSeconds + 10;
+    UpdatePlayerTracker();
+    if (!inCombat) {
+        AddDirectorIntensity(-5);
+    }
+    UpdateEncounterState();
+    SpawnByIntensity();
+}
+
+// Initializes custom variables and starts the repeating Director timer.
+event OnEntityCreated(entity sourceEntity, guid<entity> sourceGuid)
+{
+    // Initial director intensity in the 0..100 range.
+    GetSelfEntity().director_intensity as int = 0;
+    // Initial finite-state-machine state: CALM.
+    GetSelfEntity().director_state as int = 0;
+    // Initial seconds spent in current state.
+    GetSelfEntity().director_state_seconds as int = 0;
+    // Initial director tick count.
+    GetSelfEntity().director_tick_count as int = 0;
+    // Initial tracked player count.
+    GetSelfEntity().director_player_count as int = 0;
+    // Initial combat state flag.
+    GetSelfEntity().director_in_combat as bool = false;
+    // Initial tracked player entity list.
+    GetSelfEntity().director_players as list<entity> = GetListofPlayerEntitiesontheField();
+    // Timer interval list for a repeating 10 second director loop.
+    list<float> timerDelays = list<float>{10.0};
+    StartTimer(sourceEntity, "director_tick", true, timerDelays);
+    print("Director initialized");
+}
+
+// Handles the registered timer callback and runs DirectorUpdate every 10 seconds.
+event OnTimerIsTriggered(entity sourceEntity, guid<entity> sourceGuid, string a, int b, int c, guid<entity> d)
+{
+    if (a == "director_tick") {
+        DirectorUpdate();
+    }
+}
+
+// Handles hit detection as the player-damage intensity input.
+event OnOnHitDetectionIsTriggered(entity sourceEntity, guid<entity> sourceGuid, bool a, entity b, vec c)
+{
+    // Player damage intensity increment.
+    int damageIntensity = 10;
+    AddDirectorIntensity(damageIntensity);
+}
+
+// Handles player death/all-down as the major intensity input.
+event OnAllPlayersCharactersAreDown(entity sourceEntity)
+{
+    // Player death/all-down intensity increment.
+    int downIntensity = 30;
+    AddDirectorIntensity(downIntensity);
+}
+
+// Handles combat entry as a small intensity input.
+event OnCreationEntersCombat(entity sourceEntity, guid<entity> sourceGuid)
+{
+    // Combat entry intensity increment.
+    int combatIntensity = 5;
+    AddDirectorIntensity(combatIntensity);
+    GetSelfEntity().director_in_combat as bool = true;
+}
+
+// Handles combat exit and updates the tracker flag.
+event OnCreationLeavesCombat(entity sourceEntity, guid<entity> sourceGuid)
+{
+    // Combat exit flag update.
+    bool inCombat = false;
+    GetSelfEntity().director_in_combat as bool = inCombat;
+}
